@@ -11,21 +11,6 @@ use std::string::FromUtf8Error;
 /// Handle to a frame (index in a vector)
 type FrameHandle = u32;
 
-#[derive(Debug, Clone, Decode, Encode)]
-pub struct PositionData {
-    /// Unicode point
-    #[n(0)]
-    charpos: usize,
-
-    /// UTF-8 byte offset
-    #[n(1)]
-    bytepos: usize,
-
-    /// Size in bytes of this data point and all data points until the next one in the index
-    #[n(2)]
-    size: u8,
-}
-
 #[derive(Debug)]
 pub enum Error {
     OutOfBoundsError { begin: isize, end: isize },
@@ -35,6 +20,7 @@ pub enum Error {
     IndexError,
     NotLoaded,
 }
+
 impl fmt::Display for Error {
     /// Formats the error message for printing
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
@@ -51,6 +37,21 @@ impl fmt::Display for Error {
 
 impl std::error::Error for Error {}
 
+#[derive(Debug, Clone, Decode, Encode)]
+pub struct PositionData {
+    /// Unicode point
+    #[n(0)]
+    charpos: usize,
+
+    /// UTF-8 byte offset
+    #[n(1)]
+    bytepos: usize,
+
+    /// Size in bytes of this data point and all data points until the next one in the index
+    #[n(2)]
+    size: u8,
+}
+
 impl PositionData {
     pub fn charpos(&self) -> usize {
         self.charpos
@@ -63,6 +64,8 @@ impl PositionData {
     }
 }
 
+/// This represent a TextFile and associates a file on disk with
+/// immutable excerpts of it (frames) stored in memory.
 pub struct TextFile {
     /// The path to the text file
     path: PathBuf,
@@ -75,6 +78,13 @@ pub struct TextFile {
 
     /// Maps character positions to bytes
     positionindex: PositionIndex,
+}
+
+/// A frame is a fragment of loaded text
+struct TextFrame {
+    beginbyte: usize,
+    endbyte: usize,
+    text: String,
 }
 
 #[derive(Debug, Default, Clone, Decode, Encode)]
@@ -116,6 +126,11 @@ impl TextFile {
             textfile.positionindex.to_file(indexpath.as_path())?;
         }
         Ok(textfile)
+    }
+
+    /// Returns the filename on disk
+    pub fn path(&self) -> &Path {
+        self.path.as_path()
     }
 
     /// Returns a text fragment. The fragment must already be in memory or an Error::NotLoaded will be returned.
@@ -364,13 +379,6 @@ impl PositionIndex {
             .map_err(|e| Error::IOError(e))?;
         Ok(minicbor::decode(&buffer).map_err(|_| Error::IndexError)?)
     }
-}
-
-/// A frame is a fragment of loaded text
-pub struct TextFrame {
-    beginbyte: usize,
-    endbyte: usize,
-    text: String,
 }
 
 #[cfg(test)]
