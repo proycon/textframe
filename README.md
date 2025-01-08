@@ -34,8 +34,11 @@ Example:
 use textframe::TextFile;
 
 let mut textfile = TextFile::new("/tmp/test.txt", None).expect("file must load");
-//gets the text from 10 to 20 (unicode points)
+//gets the text from 10 to 20 (unicode points), requires a mutable instance
 let text: &str = textfile.get_or_load(10,20);
+
+//once a frame is already loaded, you can use this instead, works on an immutable instance:
+let text: &str = textfile.get(10,20);
 ```
 
 ## Licence
