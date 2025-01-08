@@ -1,3 +1,10 @@
+/*
+TextFrame
+  by Maarten van Gompel <proycon@anaproy.nl>
+  Digital Infrastructure, KNAW Humanities Cluster
+  licensed under the GNU General Public Licence v3
+*/
+
 use minicbor::{Decode, Encode};
 use smallvec::{smallvec, SmallVec};
 use std::collections::btree_map::Entry;
