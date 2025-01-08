@@ -5,6 +5,7 @@ use std::collections::BTreeMap;
 use std::fmt;
 use std::fs::File;
 use std::io::{BufRead, BufReader, BufWriter, Read, Seek, SeekFrom};
+use std::ops::Bound::Included;
 use std::path::{Path, PathBuf};
 use std::string::FromUtf8Error;
 
@@ -104,9 +105,9 @@ struct PositionIndex {
 
 impl TextFile {
     /// Associates with an existing text file on disk, you can optionally provide an path to an indexfile to use for caching the position index. Is such a cache is not available, the text file is scanned once and the index created.
-    pub fn new(path: PathBuf, indexpath: Option<PathBuf>) -> Result<Self, Error> {
+    pub fn new(path: impl Into<PathBuf>, indexpath: Option<&Path>) -> Result<Self, Error> {
         let mut textfile = Self {
-            path,
+            path: path.into(),
             frames: Vec::new(),
             frametable: BTreeMap::new(),
             positionindex: PositionIndex::default(),
@@ -115,7 +116,7 @@ impl TextFile {
         let mut build_index = true;
         if let Some(indexpath) = indexpath.as_ref() {
             if indexpath.exists() {
-                textfile.positionindex = PositionIndex::from_file(indexpath.as_path())?;
+                textfile.positionindex = PositionIndex::from_file(indexpath)?;
                 build_index = false;
             }
         }
@@ -123,7 +124,7 @@ impl TextFile {
             textfile.positionindex = PositionIndex::new(textfile.path.as_path())?;
         }
         if let Some(indexpath) = indexpath.as_ref() {
-            textfile.positionindex.to_file(indexpath.as_path())?;
+            textfile.positionindex.to_file(indexpath)?;
         }
         Ok(textfile)
     }
@@ -188,13 +189,13 @@ impl TextFile {
 
     /// Returns an existing frame handle that holds the given byte offset (if any is loaded)
     fn framehandle(&self, beginbyte: usize, endbyte: usize) -> Option<FrameHandle> {
-        let mut iter = self.frametable.range(0..=beginbyte);
+        let mut iter = self.frametable.range((Included(&0), Included(&beginbyte)));
         // read the (double-ended) iterator backwards
         // and see if we find a frame that holds the bytes we want
         while let Some((_, framehandles)) = iter.next_back() {
             for handle in framehandles {
                 if let Some(frame) = self.frames.get(*handle as usize) {
-                    if frame.endbyte > endbyte {
+                    if frame.endbyte >= endbyte {
                         return Some(*handle);
                     }
                 }
@@ -205,13 +206,13 @@ impl TextFile {
 
     /// Returns an existing frame that holds the given byte offset (if any is loaded)
     fn frame(&self, beginbyte: usize, endbyte: usize) -> Option<&TextFrame> {
-        let mut iter = self.frametable.range(0..=beginbyte);
+        let mut iter = self.frametable.range((Included(&0), Included(&beginbyte)));
         // read the (double-ended) iterator backwards
         // and see if we find a frame that holds the bytes we want
         while let Some((_, framehandles)) = iter.next_back() {
             for handle in framehandles {
                 if let Some(frame) = self.frames.get(*handle as usize) {
-                    if frame.endbyte > endbyte {
+                    if frame.endbyte >= endbyte {
                         return Some(frame);
                     }
                 }
@@ -225,14 +226,14 @@ impl TextFile {
         let beginbyte = self.chars_to_bytes(beginchar)?;
         let endbyte = self.chars_to_bytes(endchar)?;
         match self.load_frame(beginbyte, endbyte) {
-            Ok(_frame) => Ok(()),
+            Ok(_handle) => Ok(()),
             Err(e) => Err(e),
         }
     }
 
     /// Loads a text frame from disk into memory
-    fn load_frame(&mut self, beginbyte: usize, endbyte: usize) -> Result<&TextFrame, Error> {
-        let mut buffer: Vec<u8> = Vec::with_capacity(endbyte - beginbyte);
+    fn load_frame(&mut self, beginbyte: usize, endbyte: usize) -> Result<FrameHandle, Error> {
+        let mut buffer: Vec<u8> = vec![0; endbyte - beginbyte];
         let mut file = File::open(self.path.as_path()).map_err(|e| Error::IOError(e))?;
         file.seek(SeekFrom::Start(beginbyte as u64))
             .map_err(|e| Error::IOError(e))?;
@@ -251,7 +252,7 @@ impl TextFile {
                 entry.insert(smallvec!(handle));
             }
         }
-        Ok(self.frames.get(handle as usize).unwrap())
+        Ok(handle)
     }
 
     /// Convert a character position to byte position
@@ -263,12 +264,24 @@ impl TextFile {
         {
             Ok(index) => {
                 //exact match
-                let posdata = self.positionindex.positions.get(index).unwrap();
+                let posdata = self
+                    .positionindex
+                    .positions
+                    .get(index)
+                    .expect("position should exist");
                 Ok(posdata.bytepos())
             }
+            Err(0) => {
+                //insertion before first item should never happen , because the first PositionData item is always the first char
+                unreachable!("match before first positiondata should not occur")
+            }
             Err(index) => {
-                //miss, compute from the item just before
-                let posdata = self.positionindex.positions.get(index).unwrap();
+                //miss, compute from the item just before, index (>0) will be the item just after the failure
+                let posdata = self
+                    .positionindex
+                    .positions
+                    .get(index - 1)
+                    .expect("position should exist");
                 let charoffset = charpos - posdata.charpos();
                 let bytepos = posdata.bytepos() + (posdata.size() as usize * charoffset);
                 if bytepos > self.positionindex.bytesize {
@@ -288,7 +301,7 @@ impl TextFile {
     /// * `begin` - The begin offset in unicode character points (0-indexed). If negative, it is interpreted relative to the end of the text.
     /// * `end` - The end offset in unicode character points (0-indexed, non-inclusive). If 0 or negative, it is interpreted relative to the end of the text.
     pub fn absolute_pos(&self, begin: isize, end: isize) -> Result<(usize, usize), Error> {
-        if begin >= 0 && end > 0 && end < begin {
+        if begin >= 0 && end > 0 && begin < end {
             Ok((begin as usize, end as usize))
         } else if begin >= 0 && end <= 0 && end.abs() as usize <= self.positionindex.charsize {
             Ok((begin as usize, self.positionindex.charsize + end as usize))
@@ -312,8 +325,21 @@ impl TextFile {
             Ok((begin_abs, end_abs))
         } else {
             //shouldn't occur
-            Err(Error::OutOfBoundsError { begin, end })
+            unreachable!(
+                "Out of Bounds with {}-{}, should never happen (logic error)",
+                begin, end
+            )
         }
+    }
+
+    /// Returns the length of the total text file in characters, i.e. the number of character in the text
+    pub fn len(&self) -> usize {
+        self.positionindex.charsize
+    }
+
+    /// Returns the length of the total text file in bytes
+    pub fn len_utf8(&self) -> usize {
+        self.positionindex.bytesize
     }
 }
 
@@ -331,14 +357,10 @@ impl PositionIndex {
         loop {
             let read_bytes = reader.read_line(&mut line).map_err(|e| Error::IOError(e))?;
             if read_bytes == 0 {
-                //EOF: ends are non-inclusive so add one
-                charpos += 1;
-                bytepos += 1;
+                //EOF
                 break;
             } else {
-                for (bytepos2, char) in line.char_indices() {
-                    charpos += 1;
-                    bytepos += bytepos2;
+                for char in line.chars() {
                     let charsize = char.len_utf8() as u8;
                     if charsize != prevcharsize {
                         positions.push(PositionData {
@@ -347,6 +369,8 @@ impl PositionIndex {
                             size: charsize,
                         });
                     }
+                    charpos += 1;
+                    bytepos += charsize as usize;
                     prevcharsize = charsize;
                 }
                 //clear buffer for next read
@@ -384,6 +408,121 @@ impl PositionIndex {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::io::Write;
+    use tempfile::NamedTempFile;
 
-    //TODO
+    // all single byte-characters, for baseline testing
+    const EXAMPLE_ASCII_TEXT: &str = "
+Article 1
+
+All human beings are born free and equal in dignity and rights. They are endowed with reason and conscience and should act towards one another in a spirit of brotherhood.
+
+Article 2
+
+Everyone is entitled to all the rights and freedoms set forth in this Declaration, without distinction of any kind, such as race, colour, sex, language, religion, political or other opinion, national or social origin, property, birth or other status. Furthermore, no distinction shall be made on the basis of the political, jurisdictional or international status of the country or territory to which a person belongs, whether it be independent, trust, non-self-governing or under any other limitation of sovereignty.
+
+Article 3
+
+Everyone has the right to life, liberty and security of person.
+
+Article 4
+
+No one shall be held in slavery or servitude; slavery and the slave trade shall be prohibited in all their forms.
+";
+
+    // multi-byte characters (mixed with single-byte)
+    const EXAMPLE_UNICODE_TEXT: &str = "
+第一条
+
+人人生而自由,在尊严和权利上一律平等。他们赋有理性和良心,并应以兄弟关系的精神相对待。
+第二条
+
+人人有资格享有本宣言所载的一切权利和自由,不分种族、肤色、性别、语言、宗教、政治或其他见解、国籍或社会出身、财产、出生或其他身分等任何区别。
+
+并且不得因一人所属的国家或领土的政治的、行政的或者国际的地位之不同而有所区别,无论该领土是独立领土、托管领土、非自治领土或者处于其他任何主权受限制的情况之下。
+第三条
+
+人人有权享有生命、自由和人身安全。
+第四条
+
+任何人不得使为奴隶或奴役;一切形式的奴隶制度和奴隶买卖,均应予以禁止。
+";
+
+    fn setup_ascii() -> NamedTempFile {
+        let mut file = tempfile::NamedTempFile::new().expect("temp file");
+        write!(file, "{}", EXAMPLE_ASCII_TEXT).expect("write must work");
+        file
+    }
+
+    fn setup_unicode() -> NamedTempFile {
+        let mut file = tempfile::NamedTempFile::new().expect("temp file");
+        write!(file, "{}", EXAMPLE_UNICODE_TEXT).expect("write must work");
+        file
+    }
+
+    #[test]
+    pub fn test001_init_ascii() {
+        let file = setup_ascii();
+        let textfile = TextFile::new(file.path(), None).expect("file must load");
+        assert_eq!(textfile.len(), 914);
+        assert_eq!(textfile.len_utf8(), 914);
+    }
+
+    #[test]
+    pub fn test001_init_unicode() {
+        let file = setup_unicode();
+        let textfile = TextFile::new(file.path(), None).expect("file must load");
+        assert_eq!(textfile.len(), 271);
+        assert_eq!(textfile.len_utf8(), 771);
+    }
+
+    #[test]
+    pub fn test002_load_ascii() {
+        let file = setup_ascii();
+        let mut textfile = TextFile::new(file.path(), None).expect("file must load");
+        let text = textfile.get_or_load(0, 0).expect("text should exist");
+        assert_eq!(text, EXAMPLE_ASCII_TEXT);
+    }
+
+    #[test]
+    pub fn test002_load_ascii_explicit() {
+        let file = setup_ascii();
+        let mut textfile = TextFile::new(file.path(), None).expect("file must load");
+        assert!(textfile.load(0, 0).is_ok());
+        let text = textfile.get(0, 0).expect("text should exist");
+        assert_eq!(text, EXAMPLE_ASCII_TEXT);
+    }
+
+    #[test]
+    pub fn test002_load_unicode() {
+        let file = setup_unicode();
+        let mut textfile = TextFile::new(file.path(), None).expect("file must load");
+        let text = textfile.get_or_load(0, 0).expect("text should exist");
+        assert_eq!(text, EXAMPLE_UNICODE_TEXT);
+    }
+
+    #[test]
+    pub fn test003_subpart_of_loaded_frame() {
+        let file = setup_ascii();
+        let mut textfile = TextFile::new(file.path(), None).expect("file must load");
+        assert!(textfile.load(0, 0).is_ok());
+        let text = textfile.get(1, 10).expect("text should exist");
+        assert_eq!(text, "Article 1");
+    }
+
+    #[test]
+    pub fn test004_excerpt_in_frame() {
+        let file = setup_ascii();
+        let mut textfile = TextFile::new(file.path(), None).expect("file must load");
+        let text = textfile.get_or_load(1, 10).expect("text should exist");
+        assert_eq!(text, "Article 1");
+    }
+
+    #[test]
+    pub fn test005_out_of_bounds() {
+        let file = setup_ascii();
+        let mut textfile = TextFile::new(file.path(), None).expect("file must load");
+        assert!(textfile.load(0, 0).is_ok());
+        assert!(textfile.get(1, 999).is_err());
+    }
 }
