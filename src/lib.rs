@@ -526,6 +526,14 @@ No one shall be held in slavery or servitude; slavery and the slave trade shall 
     }
 
     #[test]
+    pub fn test004_excerpt_in_frame_unicode() {
+        let file = setup_unicode();
+        let mut textfile = TextFile::new(file.path(), None).expect("file must load");
+        let text = textfile.get_or_load(1, 4).expect("text should exist");
+        assert_eq!(text, "第一条");
+    }
+
+    #[test]
     pub fn test005_out_of_bounds() {
         let file = setup_ascii();
         let mut textfile = TextFile::new(file.path(), None).expect("file must load");
