@@ -19,6 +19,7 @@ Negative values in offsets are supported and are interpreted as relative to the 
 * This library considers text as an immutable resource, text files on disk *MUST NOT* be modified after a `textframe::TextFile` object is associated with them.
 * The mutability of `textframe::TextFile` itself only refers to the fact whether it is allowed to load further fragments from disk or not.
 * When loading a text file, the entire text file is read in a streaming manner at first and an index is computed from unicode character positions to byte positions. This index can be written to a (binary) file which acts as a cache, preventing the need to recompute this index next time, and gaining a performance benefit.
+* Existing frames are never unloaded or invalidated. Any text references (`&str`) therefore share the lifetime of the `textframe::TextFile` object. Depending on the order of requests, it does mean the loaded frames may have some overlap and be sub-optimal.
 
 ## Installation
 
