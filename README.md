@@ -42,6 +42,10 @@ let text: &str = textfile.get_or_load(10,20);
 let text: &str = textfile.get(10,20);
 ```
 
+## Related projects
+
+* [textsurf](https://github.com/knaw-huc/textsurf) - A WebAPI around textframe. Serves text files over the web.
+
 ## Licence
 
 GNU General Public Licence v3 only
