@@ -15,6 +15,7 @@ use std::io::{BufRead, BufReader, BufWriter, Read, Seek, SeekFrom};
 use std::ops::Bound::Included;
 use std::path::{Path, PathBuf};
 use std::string::FromUtf8Error;
+use std::time::SystemTime;
 
 /// Handle to a frame (index in a vector)
 type FrameHandle = u32;
@@ -86,6 +87,9 @@ pub struct TextFile {
 
     /// Maps character positions to bytes
     positionindex: PositionIndex,
+
+    /// Modification time (unix timestamp)
+    mtime: u64,
 }
 
 /// A frame is a fragment of loaded text
@@ -111,13 +115,14 @@ struct PositionIndex {
 }
 
 impl TextFile {
-    /// Associates with an existing text file on disk, you can optionally provide an path to an indexfile to use for caching the position index. Is such a cache is not available, the text file is scanned once and the index created.
+    /// Associates with an existing text file on disk, you can optionally provide a path to an indexfile to use for caching the position index. Is such a cache is not available, the text file is scanned once and the index created.
     pub fn new(path: impl Into<PathBuf>, indexpath: Option<&Path>) -> Result<Self, Error> {
         let mut textfile = Self {
             path: path.into(),
             frames: Vec::new(),
             frametable: BTreeMap::new(),
             positionindex: PositionIndex::default(),
+            mtime: 0,
         };
 
         let mut build_index = true;
@@ -132,6 +137,14 @@ impl TextFile {
         }
         if let Some(indexpath) = indexpath.as_ref() {
             textfile.positionindex.to_file(indexpath)?;
+        }
+        if let Ok(metadata) = std::fs::metadata(textfile.path.as_path()) {
+            if let Ok(modified) = metadata.modified() {
+                textfile.mtime = modified
+                    .duration_since(SystemTime::UNIX_EPOCH)
+                    .expect("invalid file timestamp (before unix epoch)")
+                    .as_secs()
+            }
         }
         Ok(textfile)
     }
@@ -347,6 +360,11 @@ impl TextFile {
     /// Returns the length of the total text file in bytes
     pub fn len_utf8(&self) -> usize {
         self.positionindex.bytesize
+    }
+
+    /// Returns the unix timestamp when the file was last modified
+    pub fn mtime(&self) -> u64 {
+        self.mtime
     }
 }
 
