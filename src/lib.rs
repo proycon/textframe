@@ -5,8 +5,10 @@ TextFrame
   licensed under the GNU General Public Licence v3
 */
 
+use hmac_sha256::Hash;
 use minicbor::{Decode, Encode};
 use smallvec::{smallvec, SmallVec};
+
 use std::collections::btree_map::Entry;
 use std::collections::BTreeMap;
 use std::fmt;
@@ -112,6 +114,10 @@ struct PositionIndex {
     /// Maps character positions to bytes
     #[n(2)]
     positions: Vec<PositionData>,
+
+    /// SHA256 checksum of the contents
+    #[n(3)]
+    checksum: [u8; 32],
 }
 
 impl TextFile {
@@ -366,6 +372,16 @@ impl TextFile {
     pub fn mtime(&self) -> u64 {
         self.mtime
     }
+
+    /// Returns the SHA-256 checksum
+    pub fn checksum(&self) -> &[u8; 32] {
+        &self.positionindex.checksum
+    }
+
+    /// Returns the SHA-256 checksum as a digest string
+    pub fn checksum_digest(&self) -> String {
+        format!("{:x}", HexDigest(self.checksum()))
+    }
 }
 
 impl PositionIndex {
@@ -379,12 +395,14 @@ impl PositionIndex {
         // read with a line by line to prevent excessive read() syscalls and handle UTF-8 properly
         let mut reader = BufReader::new(textfile);
         let mut line = String::new();
+        let mut checksum = Hash::new();
         loop {
             let read_bytes = reader.read_line(&mut line).map_err(|e| Error::IOError(e))?;
             if read_bytes == 0 {
                 //EOF
                 break;
             } else {
+                checksum.update(&line);
                 for char in line.chars() {
                     let charsize = char.len_utf8() as u8;
                     if charsize != prevcharsize {
@@ -402,10 +420,12 @@ impl PositionIndex {
                 line.clear();
             }
         }
+        let checksum = checksum.finalize();
         Ok(PositionIndex {
             charsize: charpos,
             bytesize: bytepos,
             positions,
+            checksum,
         })
     }
 
@@ -427,6 +447,18 @@ impl PositionIndex {
             .read_to_end(&mut buffer)
             .map_err(|e| Error::IOError(e))?;
         Ok(minicbor::decode(&buffer).map_err(|_| Error::IndexError)?)
+    }
+}
+
+struct HexDigest<'a>(&'a [u8; 32]);
+
+// You can choose to implement multiple traits, like Lower and UpperHex
+impl fmt::LowerHex for HexDigest<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        for byte in self.0 {
+            write!(f, "{:02x}", byte)?;
+        }
+        Ok(())
     }
 }
 
@@ -557,5 +589,24 @@ No one shall be held in slavery or servitude; slavery and the slave trade shall 
         let mut textfile = TextFile::new(file.path(), None).expect("file must load");
         assert!(textfile.load(0, 0).is_ok());
         assert!(textfile.get(1, 999).is_err());
+    }
+
+    #[test]
+    pub fn test006_checksum() {
+        let file = setup_ascii();
+        /*
+        // compute reference
+        let output = std::process::Command::new("sha256sum")
+            .arg(file.path())
+            .output()
+            .expect("Failed to execute command");
+        let refsum = String::from_utf8_lossy(&output.stdout).to_owned();
+        eprintln!(refsum);
+        */
+        let textfile = TextFile::new(file.path(), None).expect("file must load");
+        assert_eq!(
+            textfile.checksum_digest(),
+            "c6b079e561f19702d63111a3201d4850e9649b8a3ef1929d6530a780f3815215"
+        );
     }
 }
