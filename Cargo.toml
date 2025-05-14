@@ -1,6 +1,6 @@
 [package]
 name = "textframe"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2021"
 authors = ["Maarten van Gompel <proycon@anaproy.nl>"]
 description = "Library to query plain text documents by unicode offset without loading them all into memory"

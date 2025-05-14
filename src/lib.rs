@@ -66,7 +66,7 @@ where
     size: u8,
 }
 
-trait Position {
+pub trait Position {
     fn charpos(&self) -> usize;
     fn bytepos(&self) -> usize;
     fn size(&self) -> u8;
@@ -154,7 +154,7 @@ impl Default for PositionIndex {
 
 #[derive(Debug, Clone, Decode, Encode)]
 /// Abstraction over differently sized position vectors
-enum Positions {
+pub enum Positions {
     #[n(0)]
     Small(#[n(0)] Vec<PositionData<u16>>),
 
@@ -166,7 +166,7 @@ enum Positions {
 }
 
 impl Positions {
-    fn new(filesize: usize) -> Self {
+    pub fn new(filesize: usize) -> Self {
         if filesize < 65536 {
             Self::Small(Vec::new())
         } else if filesize < 4294967296 {
@@ -176,7 +176,7 @@ impl Positions {
         }
     }
 
-    fn len(&self) -> usize {
+    pub fn len(&self) -> usize {
         match self {
             Self::Small(positions) => positions.len(),
             Self::Large(positions) => positions.len(),
@@ -184,21 +184,21 @@ impl Positions {
         }
     }
 
-    fn bytepos(&self, index: usize) -> Option<usize> {
+    pub fn bytepos(&self, index: usize) -> Option<usize> {
         match self {
             Self::Small(positions) => positions.get(index).map(|x| x.bytepos as usize),
             Self::Large(positions) => positions.get(index).map(|x| x.bytepos as usize),
             Self::Huge(positions) => positions.get(index).map(|x| x.bytepos as usize),
         }
     }
-    fn charpos(&self, index: usize) -> Option<usize> {
+    pub fn charpos(&self, index: usize) -> Option<usize> {
         match self {
             Self::Small(positions) => positions.get(index).map(|x| x.charpos as usize),
             Self::Large(positions) => positions.get(index).map(|x| x.charpos as usize),
             Self::Huge(positions) => positions.get(index).map(|x| x.charpos as usize),
         }
     }
-    fn size(&self, index: usize) -> Option<u8> {
+    pub fn size(&self, index: usize) -> Option<u8> {
         match self {
             Self::Small(positions) => positions.get(index).map(|x| x.size),
             Self::Large(positions) => positions.get(index).map(|x| x.size),
@@ -206,7 +206,7 @@ impl Positions {
         }
     }
 
-    fn binary_search(&self, charpos: usize) -> Result<usize, usize> {
+    pub fn binary_search(&self, charpos: usize) -> Result<usize, usize> {
         match self {
             Self::Small(positions) => positions
                 .binary_search_by_key(&charpos, |posdata: &PositionData<u16>| {
@@ -223,7 +223,7 @@ impl Positions {
         }
     }
 
-    fn push(&mut self, charpos: usize, bytepos: usize, charsize: u8) {
+    pub fn push(&mut self, charpos: usize, bytepos: usize, charsize: u8) {
         match self {
             Self::Small(positions) => positions.push(PositionData {
                 charpos: charpos as u16,
