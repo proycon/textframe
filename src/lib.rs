@@ -376,6 +376,12 @@ impl TextFile {
 
     /// Loads a text frame from disk into memory
     fn load_frame(&mut self, beginbyte: usize, endbyte: usize) -> Result<FrameHandle, Error> {
+        if beginbyte > endbyte {
+            return Err(Error::OutOfBoundsError {
+                begin: beginbyte as isize,
+                end: endbyte as isize,
+            });
+        }
         let mut buffer: Vec<u8> = vec![0; endbyte - beginbyte];
         let mut file = File::open(self.path.as_path()).map_err(|e| Error::IOError(e))?;
         file.seek(SeekFrom::Start(beginbyte as u64))
@@ -402,6 +408,7 @@ impl TextFile {
     pub fn chars_to_bytes(&self, charpos: usize) -> Result<usize, Error> {
         match self.positionindex.positions.binary_search(charpos) {
             Ok(index) => {
+                eprintln!("DEBUG match");
                 //exact match
                 Ok(self
                     .positionindex
@@ -424,7 +431,7 @@ impl TextFile {
                 let bytepos = self
                     .positionindex
                     .positions
-                    .charpos(index - 1)
+                    .bytepos(index - 1)
                     .expect("position should exist")
                     + (self
                         .positionindex
@@ -717,11 +724,27 @@ No one shall be held in slavery or servitude; slavery and the slave trade shall 
     }
 
     #[test]
+    pub fn test004_end_excerpt_in_frame() {
+        let file = setup_ascii();
+        let mut textfile = TextFile::new(file.path(), None).expect("file must load");
+        let text = textfile.get_or_load(-7, 0).expect("text should exist");
+        assert_eq!(text, "forms.\n");
+    }
+
+    #[test]
     pub fn test004_excerpt_in_frame_unicode() {
         let file = setup_unicode();
         let mut textfile = TextFile::new(file.path(), None).expect("file must load");
         let text = textfile.get_or_load(1, 4).expect("text should exist");
         assert_eq!(text, "第一条");
+    }
+
+    #[test]
+    pub fn test004_end_excerpt_in_frame_unicode() {
+        let file = setup_unicode();
+        let mut textfile = TextFile::new(file.path(), None).expect("file must load");
+        let text = textfile.get_or_load(-3, 0).expect("text should exist");
+        assert_eq!(text, "止。\n");
     }
 
     #[test]
