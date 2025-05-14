@@ -49,28 +49,49 @@ impl fmt::Display for Error {
 impl std::error::Error for Error {}
 
 #[derive(Debug, Clone, Decode, Encode)]
-pub struct PositionData {
+pub struct PositionData<T>
+where
+    T: Eq + Ord + Copy,
+{
     /// Unicode point
     #[n(0)]
-    charpos: usize,
+    charpos: T,
 
     /// UTF-8 byte offset
     #[n(1)]
-    bytepos: usize,
+    bytepos: T,
 
     /// Size in bytes of this data point and all data points until the next one in the index
     #[n(2)]
     size: u8,
 }
 
-impl PositionData {
-    pub fn charpos(&self) -> usize {
-        self.charpos
+trait Position {
+    fn charpos(&self) -> usize;
+    fn bytepos(&self) -> usize;
+    fn size(&self) -> u8;
+}
+
+impl Position for PositionData<u32> {
+    fn charpos(&self) -> usize {
+        self.charpos as usize
     }
-    pub fn bytepos(&self) -> usize {
-        self.bytepos
+    fn bytepos(&self) -> usize {
+        self.bytepos as usize
     }
-    pub fn size(&self) -> u8 {
+    fn size(&self) -> u8 {
+        self.size
+    }
+}
+
+impl Position for PositionData<u64> {
+    fn charpos(&self) -> usize {
+        self.charpos as usize
+    }
+    fn bytepos(&self) -> usize {
+        self.bytepos as usize
+    }
+    fn size(&self) -> u8 {
         self.size
     }
 }
@@ -101,7 +122,7 @@ struct TextFrame {
     text: String,
 }
 
-#[derive(Debug, Default, Clone, Decode, Encode)]
+#[derive(Debug, Clone, Decode, Encode)]
 struct PositionIndex {
     /// Length of the text file in characters
     #[n(0)]
@@ -113,11 +134,114 @@ struct PositionIndex {
 
     /// Maps character positions to bytes
     #[n(2)]
-    positions: Vec<PositionData>,
+    positions: Positions,
 
     /// SHA256 checksum of the contents
     #[n(3)]
     checksum: [u8; 32],
+}
+
+impl Default for PositionIndex {
+    fn default() -> Self {
+        Self {
+            charsize: 0,
+            bytesize: 0,
+            positions: Positions::Large(Vec::default()),
+            checksum: Default::default(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Decode, Encode)]
+/// Abstraction over differently sized position vectors
+enum Positions {
+    #[n(0)]
+    Small(#[n(0)] Vec<PositionData<u16>>),
+
+    #[n(1)]
+    Large(#[n(0)] Vec<PositionData<u32>>),
+
+    #[n(2)]
+    Huge(#[n(0)] Vec<PositionData<u64>>),
+}
+
+impl Positions {
+    fn new(filesize: usize) -> Self {
+        if filesize < 65536 {
+            Self::Small(Vec::new())
+        } else if filesize < 4294967296 {
+            Self::Large(Vec::new())
+        } else {
+            Self::Huge(Vec::new())
+        }
+    }
+
+    fn len(&self) -> usize {
+        match self {
+            Self::Small(positions) => positions.len(),
+            Self::Large(positions) => positions.len(),
+            Self::Huge(positions) => positions.len(),
+        }
+    }
+
+    fn bytepos(&self, index: usize) -> Option<usize> {
+        match self {
+            Self::Small(positions) => positions.get(index).map(|x| x.bytepos as usize),
+            Self::Large(positions) => positions.get(index).map(|x| x.bytepos as usize),
+            Self::Huge(positions) => positions.get(index).map(|x| x.bytepos as usize),
+        }
+    }
+    fn charpos(&self, index: usize) -> Option<usize> {
+        match self {
+            Self::Small(positions) => positions.get(index).map(|x| x.charpos as usize),
+            Self::Large(positions) => positions.get(index).map(|x| x.charpos as usize),
+            Self::Huge(positions) => positions.get(index).map(|x| x.charpos as usize),
+        }
+    }
+    fn size(&self, index: usize) -> Option<u8> {
+        match self {
+            Self::Small(positions) => positions.get(index).map(|x| x.size),
+            Self::Large(positions) => positions.get(index).map(|x| x.size),
+            Self::Huge(positions) => positions.get(index).map(|x| x.size),
+        }
+    }
+
+    fn binary_search(&self, charpos: usize) -> Result<usize, usize> {
+        match self {
+            Self::Small(positions) => positions
+                .binary_search_by_key(&charpos, |posdata: &PositionData<u16>| {
+                    posdata.charpos as usize
+                }),
+            Self::Large(positions) => positions
+                .binary_search_by_key(&charpos, |posdata: &PositionData<u32>| {
+                    posdata.charpos as usize
+                }),
+            Self::Huge(positions) => positions
+                .binary_search_by_key(&charpos, |posdata: &PositionData<u64>| {
+                    posdata.charpos as usize
+                }),
+        }
+    }
+
+    fn push(&mut self, charpos: usize, bytepos: usize, charsize: u8) {
+        match self {
+            Self::Small(positions) => positions.push(PositionData {
+                charpos: charpos as u16,
+                bytepos: bytepos as u16,
+                size: charsize,
+            }),
+            Self::Large(positions) => positions.push(PositionData {
+                charpos: charpos as u32,
+                bytepos: bytepos as u32,
+                size: charsize,
+            }),
+            Self::Huge(positions) => positions.push(PositionData {
+                charpos: charpos as u64,
+                bytepos: bytepos as u64,
+                size: charsize,
+            }),
+        }
+    }
 }
 
 impl TextFile {
@@ -283,19 +407,14 @@ impl TextFile {
 
     /// Convert a character position to byte position
     pub fn chars_to_bytes(&self, charpos: usize) -> Result<usize, Error> {
-        match self
-            .positionindex
-            .positions
-            .binary_search_by_key(&charpos, |posdata: &PositionData| posdata.charpos)
-        {
+        match self.positionindex.positions.binary_search(charpos) {
             Ok(index) => {
                 //exact match
-                let posdata = self
+                Ok(self
                     .positionindex
                     .positions
-                    .get(index)
-                    .expect("position should exist");
-                Ok(posdata.bytepos())
+                    .bytepos(index)
+                    .expect("position should exist"))
             }
             Err(0) => {
                 //insertion before first item should never happen , because the first PositionData item is always the first char
@@ -303,13 +422,23 @@ impl TextFile {
             }
             Err(index) => {
                 //miss, compute from the item just before, index (>0) will be the item just after the failure
-                let posdata = self
+                let charpos2 = self
                     .positionindex
                     .positions
-                    .get(index - 1)
+                    .charpos(index - 1)
                     .expect("position should exist");
-                let charoffset = charpos - posdata.charpos();
-                let bytepos = posdata.bytepos() + (posdata.size() as usize * charoffset);
+                let charoffset = charpos - charpos2;
+                let bytepos = self
+                    .positionindex
+                    .positions
+                    .charpos(index - 1)
+                    .expect("position should exist")
+                    + (self
+                        .positionindex
+                        .positions
+                        .size(index - 1)
+                        .expect("position should exist") as usize
+                        * charoffset);
                 if bytepos > self.positionindex.bytesize {
                     Err(Error::OutOfBoundsError {
                         begin: bytepos as isize,
@@ -390,10 +519,13 @@ impl PositionIndex {
         let mut charpos = 0;
         let mut bytepos = 0;
         let mut prevcharsize = 0;
-        let mut positions: Vec<PositionData> = Vec::new();
         let textfile = File::open(textfile).map_err(|e| Error::IOError(e))?;
+        let metadata = textfile.metadata().map_err(|e| Error::IOError(e))?;
+        let filesize = metadata.len();
+
         // read with a line by line to prevent excessive read() syscalls and handle UTF-8 properly
         let mut reader = BufReader::new(textfile);
+        let mut positions = Positions::new(filesize as usize);
         let mut line = String::new();
         let mut checksum = Hash::new();
         loop {
@@ -406,11 +538,7 @@ impl PositionIndex {
                 for char in line.chars() {
                     let charsize = char.len_utf8() as u8;
                     if charsize != prevcharsize {
-                        positions.push(PositionData {
-                            charpos,
-                            bytepos,
-                            size: charsize,
-                        });
+                        positions.push(charpos, bytepos, charsize);
                     }
                     charpos += 1;
                     bytepos += charsize as usize;
@@ -504,6 +632,7 @@ No one shall be held in slavery or servitude; slavery and the slave trade shall 
 
 任何人不得使为奴隶或奴役;一切形式的奴隶制度和奴隶买卖,均应予以禁止。
 ";
+    const EXAMPLE_3_TEXT: &str = "ПРИВЕТ";
 
     fn setup_ascii() -> NamedTempFile {
         let mut file = tempfile::NamedTempFile::new().expect("temp file");
@@ -514,6 +643,12 @@ No one shall be held in slavery or servitude; slavery and the slave trade shall 
     fn setup_unicode() -> NamedTempFile {
         let mut file = tempfile::NamedTempFile::new().expect("temp file");
         write!(file, "{}", EXAMPLE_UNICODE_TEXT).expect("write must work");
+        file
+    }
+
+    fn setup_3() -> NamedTempFile {
+        let mut file = tempfile::NamedTempFile::new().expect("temp file");
+        write!(file, "{}", EXAMPLE_3_TEXT).expect("write must work");
         file
     }
 
@@ -556,6 +691,14 @@ No one shall be held in slavery or servitude; slavery and the slave trade shall 
         let mut textfile = TextFile::new(file.path(), None).expect("file must load");
         let text = textfile.get_or_load(0, 0).expect("text should exist");
         assert_eq!(text, EXAMPLE_UNICODE_TEXT);
+    }
+
+    #[test]
+    pub fn test002_load_unicode_tiny() {
+        let file = setup_3();
+        let mut textfile = TextFile::new(file.path(), None).expect("file must load");
+        let text = textfile.get_or_load(0, 0).expect("text should exist");
+        assert_eq!(text, EXAMPLE_3_TEXT);
     }
 
     #[test]
@@ -608,5 +751,13 @@ No one shall be held in slavery or servitude; slavery and the slave trade shall 
             textfile.checksum_digest(),
             "c6b079e561f19702d63111a3201d4850e9649b8a3ef1929d6530a780f3815215"
         );
+    }
+
+    #[test]
+    pub fn test007_positionindex_size() {
+        let file = setup_3();
+        let mut textfile = TextFile::new(file.path(), None).expect("file must load");
+        assert!(textfile.load(0, 0).is_ok());
+        assert_eq!(textfile.positionindex.positions.len(), 1);
     }
 }
