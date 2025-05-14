@@ -112,7 +112,7 @@ pub struct TextFile {
     positionindex: PositionIndex,
 
     /// Modification time (unix timestamp)
-    mtime: u64,
+    metadata: std::fs::Metadata,
 }
 
 /// A frame is a fragment of loaded text
@@ -247,36 +247,29 @@ impl Positions {
 impl TextFile {
     /// Associates with an existing text file on disk, you can optionally provide a path to an indexfile to use for caching the position index. Is such a cache is not available, the text file is scanned once and the index created.
     pub fn new(path: impl Into<PathBuf>, indexpath: Option<&Path>) -> Result<Self, Error> {
-        let mut textfile = Self {
-            path: path.into(),
-            frames: Vec::new(),
-            frametable: BTreeMap::new(),
-            positionindex: PositionIndex::default(),
-            mtime: 0,
-        };
-
+        let path: PathBuf = path.into();
+        let metadata = std::fs::metadata(path.as_path()).map_err(|e| Error::IOError(e))?;
         let mut build_index = true;
+        let mut positionindex = PositionIndex::default();
         if let Some(indexpath) = indexpath.as_ref() {
             if indexpath.exists() {
-                textfile.positionindex = PositionIndex::from_file(indexpath)?;
+                positionindex = PositionIndex::from_file(indexpath)?;
                 build_index = false;
             }
         }
         if build_index {
-            textfile.positionindex = PositionIndex::new(textfile.path.as_path())?;
+            positionindex = PositionIndex::new(path.as_path(), metadata.len())?;
         }
         if let Some(indexpath) = indexpath.as_ref() {
-            textfile.positionindex.to_file(indexpath)?;
+            positionindex.to_file(indexpath)?;
         }
-        if let Ok(metadata) = std::fs::metadata(textfile.path.as_path()) {
-            if let Ok(modified) = metadata.modified() {
-                textfile.mtime = modified
-                    .duration_since(SystemTime::UNIX_EPOCH)
-                    .expect("invalid file timestamp (before unix epoch)")
-                    .as_secs()
-            }
-        }
-        Ok(textfile)
+        Ok(Self {
+            path,
+            frames: Vec::new(),
+            frametable: BTreeMap::new(),
+            positionindex,
+            metadata,
+        })
     }
 
     /// Returns the filename on disk
@@ -499,7 +492,14 @@ impl TextFile {
 
     /// Returns the unix timestamp when the file was last modified
     pub fn mtime(&self) -> u64 {
-        self.mtime
+        if let Ok(modified) = self.metadata.modified() {
+            modified
+                .duration_since(SystemTime::UNIX_EPOCH)
+                .expect("invalid file timestamp (before unix epoch)")
+                .as_secs()
+        } else {
+            0
+        }
     }
 
     /// Returns the SHA-256 checksum
@@ -515,13 +515,11 @@ impl TextFile {
 
 impl PositionIndex {
     /// Build a new positionindex for a given text file
-    fn new(textfile: &Path) -> Result<Self, Error> {
+    fn new(textfile: &Path, filesize: u64) -> Result<Self, Error> {
         let mut charpos = 0;
         let mut bytepos = 0;
         let mut prevcharsize = 0;
         let textfile = File::open(textfile).map_err(|e| Error::IOError(e))?;
-        let metadata = textfile.metadata().map_err(|e| Error::IOError(e))?;
-        let filesize = metadata.len();
 
         // read with a line by line to prevent excessive read() syscalls and handle UTF-8 properly
         let mut reader = BufReader::new(textfile);
