@@ -408,7 +408,6 @@ impl TextFile {
     pub fn chars_to_bytes(&self, charpos: usize) -> Result<usize, Error> {
         match self.positionindex.positions.binary_search(charpos) {
             Ok(index) => {
-                eprintln!("DEBUG match");
                 //exact match
                 Ok(self
                     .positionindex
