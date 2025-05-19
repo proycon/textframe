@@ -1010,4 +1010,13 @@ No one shall be held in slavery or servitude; slavery and the slave trade shall 
             .expect("text should exist");
         assert_eq!(text, "No one shall be held in slavery or servitude; slavery and the slave trade shall be prohibited in all their forms.\n");
     }
+
+    #[test]
+    pub fn test009_line_out_of_bounds() {
+        let file = setup_ascii();
+        let mut textfile =
+            TextFile::new(file.path(), None, Default::default()).expect("file must load");
+        assert!(textfile.load(0, 0).is_ok());
+        assert!(textfile.get_lines(1, 999).is_err());
+    }
 }
