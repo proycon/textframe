@@ -1012,6 +1012,16 @@ No one shall be held in slavery or servitude; slavery and the slave trade shall 
     }
 
     #[test]
+    pub fn test008_all_lines() {
+        let file = setup_unicode();
+        let mut textfile =
+            TextFile::new(file.path(), None, Default::default()).expect("file must load");
+        assert!(textfile.load(0, 0).is_ok());
+        let text = textfile.get_lines(0, 0).expect("text shoulde exist");
+        assert_eq!(text, EXAMPLE_UNICODE_TEXT);
+    }
+
+    #[test]
     pub fn test009_line_out_of_bounds() {
         let file = setup_ascii();
         let mut textfile =
