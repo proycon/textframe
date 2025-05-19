@@ -139,6 +139,10 @@ struct PositionIndex {
     /// SHA256 checksum of the contents
     #[n(3)]
     checksum: [u8; 32],
+
+    /// Maps lines to bytes (if enabled)
+    #[n(4)]
+    lines: Lines,
 }
 
 impl Default for PositionIndex {
@@ -146,6 +150,7 @@ impl Default for PositionIndex {
         Self {
             charsize: 0,
             bytesize: 0,
+            lines: Lines::default(),
             positions: Positions::Large(Vec::default()),
             checksum: Default::default(),
         }
@@ -244,9 +249,91 @@ impl Positions {
     }
 }
 
+#[derive(Debug, Clone, Decode, Encode)]
+/// Abstraction over differently sized vectors
+/// Lines start at 0, the underlying vector contains as many items as there are lines
+pub enum Lines {
+    #[n(0)]
+    Small(#[n(0)] Vec<u16>),
+
+    #[n(1)]
+    Large(#[n(0)] Vec<u32>),
+
+    #[n(2)]
+    Huge(#[n(0)] Vec<u64>),
+}
+
+impl Lines {
+    pub fn new(filesize: usize) -> Self {
+        if filesize < 65536 {
+            Self::Small(Vec::new())
+        } else if filesize < 4294967296 {
+            Self::Large(Vec::new())
+        } else {
+            Self::Huge(Vec::new())
+        }
+    }
+
+    /// Returns the total number of lines
+    pub fn len(&self) -> usize {
+        match self {
+            Self::Small(positions) => positions.len(),
+            Self::Large(positions) => positions.len(),
+            Self::Huge(positions) => positions.len(),
+        }
+    }
+
+    /// Returns the byte position where a line begins
+    pub fn get(&self, index: usize) -> Option<usize> {
+        match self {
+            Self::Small(positions) => positions.get(index).map(|x| *x as usize),
+            Self::Large(positions) => positions.get(index).map(|x| *x as usize),
+            Self::Huge(positions) => positions.get(index).map(|x| *x as usize),
+        }
+    }
+
+    pub fn push(&mut self, line: usize) {
+        match self {
+            Self::Small(positions) => positions.push(line as u16),
+            Self::Large(positions) => positions.push(line as u32),
+            Self::Huge(positions) => positions.push(line as u64),
+        }
+    }
+}
+
+impl Default for Lines {
+    fn default() -> Self {
+        Self::Large(Vec::new())
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+/// Text file mode.
+pub enum TextFileMode {
+    /// Do not compute a line index (cheapest), set this if you're not interested in line-based queries
+    NoLineIndex,
+
+    /// Compute a line index (takes memory and cpu time), allows queries based on line ranges
+    WithLineIndex,
+}
+
+impl Default for TextFileMode {
+    fn default() -> Self {
+        Self::WithLineIndex
+    }
+}
+
 impl TextFile {
     /// Associates with an existing text file on disk, you can optionally provide a path to an indexfile to use for caching the position index. Is such a cache is not available, the text file is scanned once and the index created.
-    pub fn new(path: impl Into<PathBuf>, indexpath: Option<&Path>) -> Result<Self, Error> {
+
+    /// * `path` - The text file
+    /// * `indexpath` - The associated index file, acts as a cache if provided to prevent recomputation every time
+    /// * `mode` - Additional options
+    pub fn new(
+        path: impl Into<PathBuf>,
+        indexpath: Option<&Path>,
+        mode: TextFileMode,
+    ) -> Result<Self, Error> {
         let path: PathBuf = path.into();
         let metadata = std::fs::metadata(path.as_path()).map_err(|e| Error::IOError(e))?;
         let mut build_index = true;
@@ -258,7 +345,7 @@ impl TextFile {
             }
         }
         if build_index {
-            positionindex = PositionIndex::new(path.as_path(), metadata.len())?;
+            positionindex = PositionIndex::new(path.as_path(), metadata.len(), mode)?;
         }
         if let Some(indexpath) = indexpath.as_ref() {
             positionindex.to_file(indexpath)?;
@@ -293,6 +380,28 @@ impl TextFile {
         }
     }
 
+    /// Returns a text fragment by lines. The fragment must already be in memory or an Error::NotLoaded will be returned.
+    /// Use `get_lines_or_load()` instead if the fragment might not be loaded yet.
+    ///
+    /// * `begin` - The begin line (0-indexed!!). If negative, it is interpreted relative to the end of the text.
+    /// * `end` - The end line (0-indexed!! non-inclusive). If 0 or negative, it is interpreted relative to the end of the text.
+    ///
+    /// This will return Error::IndexError if no line index was computed.
+    /// Trailing newline characters will always be returned.
+    pub fn get_lines(&self, begin: isize, end: isize) -> Result<&str, Error> {
+        let beginbyte = self.line_to_bytes(begin)?;
+        let endbyte = if end == 0 {
+            self.positionindex.bytesize
+        } else {
+            self.line_to_bytes(end)?
+        };
+        if let Some(frame) = self.frame(beginbyte, endbyte) {
+            Ok(&frame.text.as_str()[(beginbyte - frame.beginbyte)..(endbyte - frame.beginbyte)])
+        } else {
+            Err(Error::NotLoaded)
+        }
+    }
+
     /// Returns a text fragment, the fragment will be loaded from disk into memory if needed.
     /// Use `get()` instead if you are already sure the fragment is loaded
     ///
@@ -310,6 +419,35 @@ impl TextFile {
         }
         self.load_abs(beginchar, endchar)?;
         self.get(begin, end)
+    }
+
+    /// Returns a text fragment, the fragment will be loaded from disk into memory if needed.
+    /// Use `get_lines()` instead if you are already sure the fragment is loaded
+    ///
+    /// * `begin` - The begin line (0-indexed!!). If negative, it is interpreted relative to the end of the text.
+    /// * `end` - The end line (0-indexed!! non-inclusive). If 0 or negative, it is interpreted relative to the end of the text.
+    ///
+    /// This will return Error::IndexError if no line index was computed.
+    /// Trailing newline characters will always be returned.
+    pub fn get_or_load_lines(&mut self, begin: isize, end: isize) -> Result<&str, Error> {
+        let beginbyte = self.line_to_bytes(begin)?;
+        let endbyte = if end == 0 {
+            self.positionindex.bytesize
+        } else {
+            self.line_to_bytes(end)?
+        };
+        if let Some(framehandle) = self.framehandle(beginbyte, endbyte) {
+            let frame = self.resolve(framehandle)?;
+            return Ok(
+                &frame.text.as_str()[(beginbyte - frame.beginbyte)..(endbyte - frame.beginbyte)]
+            );
+        }
+        self.load_frame(beginbyte, endbyte)?;
+        if let Some(frame) = self.frame(beginbyte, endbyte) {
+            Ok(&frame.text.as_str()[(beginbyte - frame.beginbyte)..(endbyte - frame.beginbyte)])
+        } else {
+            Err(Error::NotLoaded)
+        }
     }
 
     /// Loads a particular text range into memory
@@ -450,6 +588,35 @@ impl TextFile {
         }
     }
 
+    /// Convert a line number (0-indexed!! first line is 0!) to bytes position.
+    /// Relative lines numbers (negative) are supported here as well.
+    /// This will return an `Error::IndexError` if no line index was computed/loaded.
+    pub fn line_to_bytes(&self, line: isize) -> Result<usize, Error> {
+        if self.positionindex.lines.len() == 0 {
+            Err(Error::IndexError)
+        } else if line as usize == self.positionindex.lines.len() {
+            Ok(self.positionindex.bytesize)
+        } else if line < 0 {
+            if line.abs() as usize > self.positionindex.lines.len() {
+                Err(Error::OutOfBoundsError {
+                    begin: line,
+                    end: 0,
+                })
+            } else {
+                self.line_to_bytes(self.positionindex.lines.len() as isize - line.abs())
+            }
+        } else {
+            if let Some(begin) = self.positionindex.lines.get(line as usize) {
+                Ok(begin)
+            } else {
+                Err(Error::OutOfBoundsError {
+                    begin: line,
+                    end: 0,
+                })
+            }
+        }
+    }
+
     /// Converts relative character offset to an absolute one. If the offset is already absolute, it will be returned as is.
     ///
     /// * `begin` - The begin offset in unicode character points (0-indexed). If negative, it is interpreted relative to the end of the text.
@@ -521,15 +688,16 @@ impl TextFile {
 
 impl PositionIndex {
     /// Build a new positionindex for a given text file
-    fn new(textfile: &Path, filesize: u64) -> Result<Self, Error> {
+    fn new(textfile: &Path, filesize: u64, options: TextFileMode) -> Result<Self, Error> {
         let mut charpos = 0;
         let mut bytepos = 0;
         let mut prevcharsize = 0;
         let textfile = File::open(textfile).map_err(|e| Error::IOError(e))?;
 
-        // read with a line by line to prevent excessive read() syscalls and handle UTF-8 properly
+        // read with a line by line reader to prevent excessive read() syscalls and handle UTF-8 properly
         let mut reader = BufReader::new(textfile);
         let mut positions = Positions::new(filesize as usize);
+        let mut lines = Lines::new(filesize as usize);
         let mut line = String::new();
         let mut checksum = Hash::new();
         loop {
@@ -539,6 +707,9 @@ impl PositionIndex {
                 break;
             } else {
                 checksum.update(&line);
+                if options == TextFileMode::WithLineIndex {
+                    lines.push(bytepos);
+                }
                 for char in line.chars() {
                     let charsize = char.len_utf8() as u8;
                     if charsize != prevcharsize {
@@ -553,11 +724,16 @@ impl PositionIndex {
             }
         }
         let checksum = checksum.finalize();
+        if options == TextFileMode::WithLineIndex {
+            //the last 'line' marks the end position
+            lines.push(bytepos);
+        }
         Ok(PositionIndex {
             charsize: charpos,
             bytesize: bytepos,
             positions,
             checksum,
+            lines,
         })
     }
 
@@ -659,7 +835,8 @@ No one shall be held in slavery or servitude; slavery and the slave trade shall 
     #[test]
     pub fn test001_init_ascii() {
         let file = setup_ascii();
-        let textfile = TextFile::new(file.path(), None).expect("file must load");
+        let textfile =
+            TextFile::new(file.path(), None, Default::default()).expect("file must load");
         assert_eq!(textfile.len(), 914);
         assert_eq!(textfile.len_utf8(), 914);
     }
@@ -667,7 +844,8 @@ No one shall be held in slavery or servitude; slavery and the slave trade shall 
     #[test]
     pub fn test001_init_unicode() {
         let file = setup_unicode();
-        let textfile = TextFile::new(file.path(), None).expect("file must load");
+        let textfile =
+            TextFile::new(file.path(), None, Default::default()).expect("file must load");
         assert_eq!(textfile.len(), 271);
         assert_eq!(textfile.len_utf8(), 771);
     }
@@ -675,7 +853,8 @@ No one shall be held in slavery or servitude; slavery and the slave trade shall 
     #[test]
     pub fn test002_load_ascii() {
         let file = setup_ascii();
-        let mut textfile = TextFile::new(file.path(), None).expect("file must load");
+        let mut textfile =
+            TextFile::new(file.path(), None, Default::default()).expect("file must load");
         let text = textfile.get_or_load(0, 0).expect("text should exist");
         assert_eq!(text, EXAMPLE_ASCII_TEXT);
     }
@@ -683,7 +862,8 @@ No one shall be held in slavery or servitude; slavery and the slave trade shall 
     #[test]
     pub fn test002_load_ascii_explicit() {
         let file = setup_ascii();
-        let mut textfile = TextFile::new(file.path(), None).expect("file must load");
+        let mut textfile =
+            TextFile::new(file.path(), None, Default::default()).expect("file must load");
         assert!(textfile.load(0, 0).is_ok());
         let text = textfile.get(0, 0).expect("text should exist");
         assert_eq!(text, EXAMPLE_ASCII_TEXT);
@@ -692,7 +872,8 @@ No one shall be held in slavery or servitude; slavery and the slave trade shall 
     #[test]
     pub fn test002_load_unicode() {
         let file = setup_unicode();
-        let mut textfile = TextFile::new(file.path(), None).expect("file must load");
+        let mut textfile =
+            TextFile::new(file.path(), None, Default::default()).expect("file must load");
         let text = textfile.get_or_load(0, 0).expect("text should exist");
         assert_eq!(text, EXAMPLE_UNICODE_TEXT);
     }
@@ -700,7 +881,8 @@ No one shall be held in slavery or servitude; slavery and the slave trade shall 
     #[test]
     pub fn test002_load_unicode_tiny() {
         let file = setup_3();
-        let mut textfile = TextFile::new(file.path(), None).expect("file must load");
+        let mut textfile =
+            TextFile::new(file.path(), None, Default::default()).expect("file must load");
         let text = textfile.get_or_load(0, 0).expect("text should exist");
         assert_eq!(text, EXAMPLE_3_TEXT);
     }
@@ -708,7 +890,8 @@ No one shall be held in slavery or servitude; slavery and the slave trade shall 
     #[test]
     pub fn test003_subpart_of_loaded_frame() {
         let file = setup_ascii();
-        let mut textfile = TextFile::new(file.path(), None).expect("file must load");
+        let mut textfile =
+            TextFile::new(file.path(), None, Default::default()).expect("file must load");
         assert!(textfile.load(0, 0).is_ok());
         let text = textfile.get(1, 10).expect("text should exist");
         assert_eq!(text, "Article 1");
@@ -717,7 +900,8 @@ No one shall be held in slavery or servitude; slavery and the slave trade shall 
     #[test]
     pub fn test004_excerpt_in_frame() {
         let file = setup_ascii();
-        let mut textfile = TextFile::new(file.path(), None).expect("file must load");
+        let mut textfile =
+            TextFile::new(file.path(), None, Default::default()).expect("file must load");
         let text = textfile.get_or_load(1, 10).expect("text should exist");
         assert_eq!(text, "Article 1");
     }
@@ -725,7 +909,8 @@ No one shall be held in slavery or servitude; slavery and the slave trade shall 
     #[test]
     pub fn test004_end_excerpt_in_frame() {
         let file = setup_ascii();
-        let mut textfile = TextFile::new(file.path(), None).expect("file must load");
+        let mut textfile =
+            TextFile::new(file.path(), None, Default::default()).expect("file must load");
         let text = textfile.get_or_load(-7, 0).expect("text should exist");
         assert_eq!(text, "forms.\n");
     }
@@ -733,7 +918,8 @@ No one shall be held in slavery or servitude; slavery and the slave trade shall 
     #[test]
     pub fn test004_excerpt_in_frame_unicode() {
         let file = setup_unicode();
-        let mut textfile = TextFile::new(file.path(), None).expect("file must load");
+        let mut textfile =
+            TextFile::new(file.path(), None, Default::default()).expect("file must load");
         let text = textfile.get_or_load(1, 4).expect("text should exist");
         assert_eq!(text, "第一条");
     }
@@ -741,7 +927,8 @@ No one shall be held in slavery or servitude; slavery and the slave trade shall 
     #[test]
     pub fn test004_end_excerpt_in_frame_unicode() {
         let file = setup_unicode();
-        let mut textfile = TextFile::new(file.path(), None).expect("file must load");
+        let mut textfile =
+            TextFile::new(file.path(), None, Default::default()).expect("file must load");
         let text = textfile.get_or_load(-3, 0).expect("text should exist");
         assert_eq!(text, "止。\n");
     }
@@ -749,7 +936,8 @@ No one shall be held in slavery or servitude; slavery and the slave trade shall 
     #[test]
     pub fn test005_out_of_bounds() {
         let file = setup_ascii();
-        let mut textfile = TextFile::new(file.path(), None).expect("file must load");
+        let mut textfile =
+            TextFile::new(file.path(), None, Default::default()).expect("file must load");
         assert!(textfile.load(0, 0).is_ok());
         assert!(textfile.get(1, 999).is_err());
     }
@@ -766,7 +954,8 @@ No one shall be held in slavery or servitude; slavery and the slave trade shall 
         let refsum = String::from_utf8_lossy(&output.stdout).to_owned();
         eprintln!(refsum);
         */
-        let textfile = TextFile::new(file.path(), None).expect("file must load");
+        let textfile =
+            TextFile::new(file.path(), None, Default::default()).expect("file must load");
         assert_eq!(
             textfile.checksum_digest(),
             "c6b079e561f19702d63111a3201d4850e9649b8a3ef1929d6530a780f3815215"
@@ -776,8 +965,49 @@ No one shall be held in slavery or servitude; slavery and the slave trade shall 
     #[test]
     pub fn test007_positionindex_size() {
         let file = setup_3();
-        let mut textfile = TextFile::new(file.path(), None).expect("file must load");
+        let mut textfile =
+            TextFile::new(file.path(), None, Default::default()).expect("file must load");
         assert!(textfile.load(0, 0).is_ok());
         assert_eq!(textfile.positionindex.positions.len(), 1);
+    }
+
+    #[test]
+    pub fn test008_line_ascii() {
+        let file = setup_ascii();
+        let mut textfile =
+            TextFile::new(file.path(), None, Default::default()).expect("file must load");
+        let text = textfile.get_or_load_lines(1, 2).expect("text should exist"); //actual first line is empty in example, this is line 2
+        assert_eq!(text, "Article 1\n");
+    }
+
+    #[test]
+    pub fn test008_empty_line_ascii() {
+        let file = setup_ascii();
+        let mut textfile =
+            TextFile::new(file.path(), None, Default::default()).expect("file must load");
+        let text = textfile.get_or_load_lines(0, 1).expect("text should exist"); //actual first line is empty
+        assert_eq!(text, "\n");
+    }
+
+    #[test]
+    pub fn test008_empty_last_line_ascii() {
+        let file = setup_ascii();
+        let mut textfile =
+            TextFile::new(file.path(), None, Default::default()).expect("file must load");
+        let text = textfile
+            .get_or_load_lines(-1, 0)
+            .expect("text should exist"); //actual last line is empty in example without trailing newline
+        assert_eq!(text, "");
+    }
+
+    #[test]
+    pub fn test008_empty_last_line() {
+        let file = setup_ascii();
+        let mut textfile =
+            TextFile::new(file.path(), None, Default::default()).expect("file must load");
+        let text = textfile
+            .get_or_load_lines(-2, -1)
+            .expect("text should exist");
+        assert_eq!(text, "No one shall be held in slavery or servitude; slavery and the slave trade shall be prohibited in all their forms.\n");
     }
 }
