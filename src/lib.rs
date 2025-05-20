@@ -30,6 +30,7 @@ pub enum Error {
     InvalidHandle,
     IndexError,
     NotLoaded,
+    NoLineIndex,
 }
 
 impl fmt::Display for Error {
@@ -42,6 +43,7 @@ impl fmt::Display for Error {
             Self::NotLoaded => write!(f, "text not loaded"),
             Self::InvalidHandle => write!(f, "Invalid handle"),
             Self::IndexError => write!(f, "Index I/O error"),
+            Self::NoLineIndex => write!(f, "No line index enabled"),
         }
     }
 }
@@ -386,7 +388,7 @@ impl TextFile {
     /// * `begin` - The begin line (0-indexed!!). If negative, it is interpreted relative to the end of the text.
     /// * `end` - The end line (0-indexed!! non-inclusive). If 0 or negative, it is interpreted relative to the end of the text.
     ///
-    /// This will return Error::IndexError if no line index was computed.
+    /// This will return Error::NoLineIndex if no line index was computed.
     /// Trailing newline characters will always be returned.
     pub fn get_lines(&self, begin: isize, end: isize) -> Result<&str, Error> {
         let beginbyte = self.line_to_bytes(begin)?;
@@ -427,7 +429,7 @@ impl TextFile {
     /// * `begin` - The begin line (0-indexed!!). If negative, it is interpreted relative to the end of the text.
     /// * `end` - The end line (0-indexed!! non-inclusive). If 0 or negative, it is interpreted relative to the end of the text.
     ///
-    /// This will return Error::IndexError if no line index was computed.
+    /// This will return Error::NoLineIndex if no line index was computed.
     /// Trailing newline characters will always be returned.
     pub fn get_or_load_lines(&mut self, begin: isize, end: isize) -> Result<&str, Error> {
         let beginbyte = self.line_to_bytes(begin)?;
@@ -593,7 +595,7 @@ impl TextFile {
     /// This will return an `Error::IndexError` if no line index was computed/loaded.
     pub fn line_to_bytes(&self, line: isize) -> Result<usize, Error> {
         if self.positionindex.lines.len() == 0 {
-            Err(Error::IndexError)
+            Err(Error::NoLineIndex)
         } else if line as usize == self.positionindex.lines.len() {
             Ok(self.positionindex.bytesize)
         } else if line < 0 {
