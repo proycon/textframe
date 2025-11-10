@@ -25,6 +25,7 @@ type FrameHandle = u32;
 #[derive(Debug)]
 pub enum Error {
     OutOfBoundsError { begin: isize, end: isize },
+    EmptyText,
     IOError(std::io::Error),
     Utf8Error(FromUtf8Error),
     InvalidHandle,
@@ -38,6 +39,7 @@ impl fmt::Display for Error {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         match self {
             Self::OutOfBoundsError { begin, end } => write!(f, "Out of Bounds ({},{})", begin, end),
+            Self::EmptyText => write!(f, "text is empty"),
             Self::IOError(e) => write!(f, "{}", e),
             Self::Utf8Error(e) => write!(f, "{}", e),
             Self::NotLoaded => write!(f, "text not loaded"),
@@ -556,8 +558,8 @@ impl TextFile {
                     .expect("position should exist"))
             }
             Err(0) => {
-                //insertion before first item should never happen , because the first PositionData item is always the first char
-                unreachable!("match before first positiondata should not occur")
+                //insertion before first item should never happen **except if a file is empty**, because the first PositionData item is always the first char
+                Err(Error::EmptyText)
             }
             Err(index) => {
                 //miss, compute from the item just before, index (>0) will be the item just after the failure
