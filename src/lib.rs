@@ -377,11 +377,15 @@ impl TextFile {
         let (beginchar, endchar) = self.absolute_pos(begin, end)?;
         let beginbyte = self.chars_to_bytes(beginchar)?;
         let endbyte = self.chars_to_bytes(endchar)?;
-        if let Some(frame) = self.frame(beginbyte, endbyte) {
-            Ok(&frame.text.as_str()[(beginbyte - frame.beginbyte)..(endbyte - frame.beginbyte)])
-        } else {
-            Err(Error::NotLoaded)
-        }
+        self.get_byterange(beginbyte, endbyte)
+    }
+
+    pub fn get_byterange(&self, beginbyte: usize, endbyte: usize) -> Result<&str, Error> {
+        self.frame(beginbyte, endbyte)
+            .ok_or(Error::NotLoaded)
+            .map(|frame| {
+                &frame.text.as_str()[(beginbyte - frame.beginbyte)..(endbyte - frame.beginbyte)]
+            })
     }
 
     /// Returns a text fragment by lines. The fragment must already be in memory or an Error::NotLoaded will be returned.
@@ -393,17 +397,8 @@ impl TextFile {
     /// This will return Error::NoLineIndex if no line index was computed.
     /// Trailing newline characters will always be returned.
     pub fn get_lines(&self, begin: isize, end: isize) -> Result<&str, Error> {
-        let beginbyte = self.line_to_bytes(begin)?;
-        let endbyte = if end == 0 {
-            self.positionindex.bytesize
-        } else {
-            self.line_to_bytes(end)?
-        };
-        if let Some(frame) = self.frame(beginbyte, endbyte) {
-            Ok(&frame.text.as_str()[(beginbyte - frame.beginbyte)..(endbyte - frame.beginbyte)])
-        } else {
-            Err(Error::NotLoaded)
-        }
+        let (beginbyte, endbyte) = self.line_range_to_byte_range(begin, end)?;
+        self.get_byterange(beginbyte, endbyte)
     }
 
     /// Returns a text fragment, the fragment will be loaded from disk into memory if needed.
@@ -415,14 +410,19 @@ impl TextFile {
         let (beginchar, endchar) = self.absolute_pos(begin, end)?;
         let beginbyte = self.chars_to_bytes(beginchar)?;
         let endbyte = self.chars_to_bytes(endchar)?;
-        if let Some(framehandle) = self.framehandle(beginbyte, endbyte) {
-            let frame = self.resolve(framehandle)?;
-            return Ok(
-                &frame.text.as_str()[(beginbyte - frame.beginbyte)..(endbyte - frame.beginbyte)]
-            );
+        match self.framehandle(beginbyte, endbyte) {
+            Some(framehandle) => {
+                let frame = self.resolve(framehandle)?;
+                Ok(
+                    &frame.text.as_str()
+                        [(beginbyte - frame.beginbyte)..(endbyte - frame.beginbyte)],
+                )
+            }
+            None => {
+                self.load_abs(beginchar, endchar)?;
+                self.get(begin, end)
+            }
         }
-        self.load_abs(beginchar, endchar)?;
-        self.get(begin, end)
     }
 
     /// Returns a text fragment, the fragment will be loaded from disk into memory if needed.
@@ -619,6 +619,21 @@ impl TextFile {
                 })
             }
         }
+    }
+
+    pub fn line_range_to_byte_range(
+        &self,
+        begin: isize,
+        end: isize,
+    ) -> Result<(usize, usize), Error> {
+        let beginbyte = self.line_to_bytes(begin)?;
+        let endbyte = if end == 0 {
+            self.positionindex.bytesize
+        } else {
+            self.line_to_bytes(end)?
+        };
+
+        Ok((beginbyte, endbyte))
     }
 
     /// Converts relative character offset to an absolute one. If the offset is already absolute, it will be returned as is.
