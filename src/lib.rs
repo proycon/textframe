@@ -232,6 +232,23 @@ impl Positions {
         }
     }
 
+    pub fn binary_search_by_bytepos(&self, bytepos: usize) -> Result<usize, usize> {
+        match self {
+            Self::Small(positions) => positions
+                .binary_search_by_key(&bytepos, |posdata: &PositionData<u16>| {
+                    posdata.bytepos as usize
+                }),
+            Self::Large(positions) => positions
+                .binary_search_by_key(&bytepos, |posdata: &PositionData<u32>| {
+                    posdata.bytepos as usize
+                }),
+            Self::Huge(positions) => positions
+                .binary_search_by_key(&bytepos, |posdata: &PositionData<u64>| {
+                    posdata.bytepos as usize
+                }),
+        }
+    }
+
     pub fn push(&mut self, charpos: usize, bytepos: usize, charsize: u8) {
         match self {
             Self::Small(positions) => positions.push(PositionData {
@@ -592,6 +609,30 @@ impl TextFile {
         }
     }
 
+    pub fn bytes_to_chars(&self, bytepos: usize) -> Result<usize, Error> {
+        if bytepos > self.positionindex.bytesize {
+            return Err(Error::OutOfBoundsError {
+                begin: bytepos as isize,
+                end: 0,
+            });
+        }
+
+        match self
+            .positionindex
+            .positions
+            .binary_search_by_bytepos(bytepos)
+        {
+            Ok(index) => Ok(self.positionindex.positions.charpos(index).unwrap()),
+            Err(0) => unreachable!("match before first positiondata should not occur"),
+            Err(index) => {
+                let prev_byte = self.positionindex.positions.bytepos(index - 1).unwrap();
+                let prev_char = self.positionindex.positions.charpos(index - 1).unwrap();
+                let size = self.positionindex.positions.size(index - 1).unwrap() as usize;
+                Ok(prev_char + (bytepos - prev_byte) / size)
+            }
+        }
+    }
+
     /// Convert a line number (0-indexed!! first line is 0!) to bytes position.
     /// Relative lines numbers (negative) are supported here as well.
     /// This will return an `Error::IndexError` if no line index was computed/loaded.
@@ -663,6 +704,39 @@ impl TextFile {
         }
 
         Ok((begin as usize, end as usize))
+    }
+
+    /// Converts relative line offset into absolute character-based one. If the offset is already absolute, it will
+    /// be returned as is.
+    ///
+    /// * `begin` - The begin offset in line numbers. If negative, it is interpreted relative to
+    ///   the end of the text
+    /// * `end` - The end offset in line numbers. If zero or negative, it is interpreted relative to
+    ///   the end of the text
+    pub fn absolute_line_pos(
+        &self,
+        mut begin: isize,
+        mut end: isize,
+    ) -> Result<(usize, usize), Error> {
+        if begin < 0 {
+            begin += self.positionindex.lines.len() as isize;
+        }
+
+        if end <= 0 {
+            end += self.positionindex.lines.len() as isize;
+        }
+
+        if begin < 0 || end < 0 || begin > end {
+            return Err(Error::OutOfBoundsError { begin, end });
+        }
+
+        let beginbyte = self.line_to_bytes(begin)?;
+        let endbyte = self.line_to_bytes(end)?;
+
+        Ok((
+            self.bytes_to_chars(beginbyte)?,
+            self.bytes_to_chars(endbyte)?,
+        ))
     }
 
     /// Returns the length of the total text file in characters, i.e. the number of character in the text
@@ -1040,5 +1114,111 @@ No one shall be held in slavery or servitude; slavery and the slave trade shall 
             TextFile::new(file.path(), None, Default::default()).expect("file must load");
         assert!(textfile.load(0, 0).is_ok());
         assert!(textfile.get_lines(1, 999).is_err());
+    }
+
+    #[test]
+    pub fn test010_bytes_to_chars_ascii() {
+        let file = setup_ascii();
+        let textfile =
+            TextFile::new(file.path(), None, Default::default()).expect("file must load");
+        // ASCII: 1 byte = 1 char
+        assert_eq!(textfile.bytes_to_chars(0).unwrap(), 0);
+        assert_eq!(textfile.bytes_to_chars(10).unwrap(), 10);
+        assert_eq!(textfile.bytes_to_chars(914).unwrap(), 914);
+    }
+
+    #[test]
+    pub fn test010_bytes_to_chars_unicode() {
+        let file = setup_unicode();
+        let textfile =
+            TextFile::new(file.path(), None, Default::default()).expect("file must load");
+        // First char is newline (1 byte)
+        assert_eq!(textfile.bytes_to_chars(0).unwrap(), 0);
+        assert_eq!(textfile.bytes_to_chars(1).unwrap(), 1);
+        // Chinese chars are 3 bytes each
+        // byte 1 = char 1 (第), byte 4 = char 2 (一), byte 7 = char 3 (条)
+        assert_eq!(textfile.bytes_to_chars(4).unwrap(), 2);
+        assert_eq!(textfile.bytes_to_chars(7).unwrap(), 3);
+        // End of file
+        assert_eq!(textfile.bytes_to_chars(771).unwrap(), 271);
+    }
+
+    #[test]
+    pub fn test010_bytes_to_chars_roundtrip() {
+        let file = setup_unicode();
+        let textfile =
+            TextFile::new(file.path(), None, Default::default()).expect("file must load");
+        // chars_to_bytes and bytes_to_chars should be inverses
+        for charpos in [0, 1, 10, 50, 100, 200, 271] {
+            let bytepos = textfile.chars_to_bytes(charpos).unwrap();
+            let back = textfile.bytes_to_chars(bytepos).unwrap();
+            assert_eq!(back, charpos, "roundtrip failed for charpos {}", charpos);
+        }
+    }
+
+    #[test]
+    pub fn test010_bytes_to_chars_out_of_bounds() {
+        let file = setup_ascii();
+        let textfile =
+            TextFile::new(file.path(), None, Default::default()).expect("file must load");
+        assert!(textfile.bytes_to_chars(9999).is_err());
+    }
+
+    #[test]
+    pub fn test011_absolute_line_pos() {
+        let file = setup_ascii();
+        let textfile =
+            TextFile::new(file.path(), None, Default::default()).expect("file must load");
+        // Line 0 starts at char 0
+        let (begin, end) = textfile.absolute_line_pos(0, 1).unwrap();
+        assert_eq!(begin, 0);
+        // first line only contains a '\n'
+        assert_eq!(end, 1);
+        // Line 1 starts at char 1 (after the initial newline)
+        let (begin, end) = textfile.absolute_line_pos(1, 2).unwrap();
+        assert_eq!(begin, 1);
+        assert_eq!(end, 11);
+    }
+
+    #[test]
+    pub fn test011_absolute_line_pos_negative() {
+        let file = setup_ascii();
+        let textfile =
+            TextFile::new(file.path(), None, Default::default()).expect("file must load");
+        // -2, 0 should give the last two lines (the very last line is empty)
+        let (begin, end) = textfile.absolute_line_pos(-2, 0).unwrap();
+        assert_eq!(begin, textfile.len() - 114);
+        assert_eq!(end, textfile.len());
+    }
+
+    #[test]
+    pub fn test011_absolute_line_pos_full() {
+        let file = setup_unicode();
+        let textfile =
+            TextFile::new(file.path(), None, Default::default()).expect("file must load");
+        // 0, 0 should span the entire file
+        let (begin, end) = textfile.absolute_line_pos(0, 0).unwrap();
+        assert_eq!(begin, 0);
+        assert_eq!(end, textfile.len());
+    }
+
+    #[test]
+    pub fn test011_absolute_line_pos_no_line_index() {
+        let file = setup_ascii();
+        let textfile =
+            TextFile::new(file.path(), None, TextFileMode::NoLineIndex).expect("file must load");
+        assert!(matches!(
+            textfile.absolute_line_pos(0, 1),
+            Err(Error::NoLineIndex)
+        ));
+    }
+
+    #[test]
+    pub fn test011_absolute_line_pos_out_of_bounds() {
+        let file = setup_ascii();
+        let textfile =
+            TextFile::new(file.path(), None, Default::default()).expect("file must load");
+        assert!(textfile.absolute_line_pos(0, 9999).is_err());
+        assert!(textfile.absolute_line_pos(-9999, 0).is_err());
     }
 }
