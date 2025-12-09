@@ -596,29 +596,38 @@ impl TextFile {
     /// Relative lines numbers (negative) are supported here as well.
     /// This will return an `Error::IndexError` if no line index was computed/loaded.
     pub fn line_to_bytes(&self, line: isize) -> Result<usize, Error> {
-        if self.positionindex.lines.len() == 0 {
-            Err(Error::NoLineIndex)
-        } else if line < 0 {
-            if line.abs() as usize > self.positionindex.lines.len() {
-                Err(Error::OutOfBoundsError {
-                    begin: line,
-                    end: 0,
-                })
-            } else {
-                self.line_to_bytes(self.positionindex.lines.len() as isize - line.abs())
-            }
-        } else if line as usize == self.positionindex.lines.len() {
-            Ok(self.positionindex.bytesize)
-        } else {
-            if let Some(begin) = self.positionindex.lines.get(line as usize) {
-                Ok(begin)
-            } else {
-                Err(Error::OutOfBoundsError {
-                    begin: line,
-                    end: 0,
-                })
-            }
+        let num_lines = self.positionindex.lines.len();
+
+        if num_lines == 0 {
+            return Err(Error::NoLineIndex);
         }
+
+        // Handle negative indexing
+        let line = if line < 0 {
+            let abs = line.unsigned_abs();
+            if abs > num_lines {
+                return Err(Error::OutOfBoundsError {
+                    begin: line,
+                    end: 0,
+                });
+            }
+            num_lines - abs
+        } else {
+            line as usize
+        };
+
+        // One past the last line = end of file
+        if line == num_lines {
+            return Ok(self.positionindex.bytesize);
+        }
+
+        self.positionindex
+            .lines
+            .get(line)
+            .ok_or(Error::OutOfBoundsError {
+                begin: line as isize,
+                end: 0,
+            })
     }
 
     pub fn line_range_to_byte_range(
