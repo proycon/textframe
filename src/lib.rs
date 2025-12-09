@@ -598,8 +598,6 @@ impl TextFile {
     pub fn line_to_bytes(&self, line: isize) -> Result<usize, Error> {
         if self.positionindex.lines.len() == 0 {
             Err(Error::NoLineIndex)
-        } else if line as usize == self.positionindex.lines.len() {
-            Ok(self.positionindex.bytesize)
         } else if line < 0 {
             if line.abs() as usize > self.positionindex.lines.len() {
                 Err(Error::OutOfBoundsError {
@@ -609,6 +607,8 @@ impl TextFile {
             } else {
                 self.line_to_bytes(self.positionindex.lines.len() as isize - line.abs())
             }
+        } else if line as usize == self.positionindex.lines.len() {
+            Ok(self.positionindex.bytesize)
         } else {
             if let Some(begin) = self.positionindex.lines.get(line as usize) {
                 Ok(begin)
