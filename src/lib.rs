@@ -640,36 +640,20 @@ impl TextFile {
     ///
     /// * `begin` - The begin offset in unicode character points (0-indexed). If negative, it is interpreted relative to the end of the text.
     /// * `end` - The end offset in unicode character points (0-indexed, non-inclusive). If 0 or negative, it is interpreted relative to the end of the text.
-    pub fn absolute_pos(&self, begin: isize, end: isize) -> Result<(usize, usize), Error> {
-        if begin >= 0 && end > 0 && begin < end {
-            Ok((begin as usize, end as usize))
-        } else if begin >= 0 && end <= 0 && end.abs() as usize <= self.positionindex.charsize {
-            Ok((begin as usize, self.positionindex.charsize + end as usize))
-        } else if begin < 0 && end > 0 && begin.abs() as usize <= self.positionindex.charsize {
-            let begin_abs = self.positionindex.charsize - begin.abs() as usize;
-            if begin_abs > end as usize {
-                return Err(Error::OutOfBoundsError { begin, end });
-            }
-            Ok((begin_abs, end as usize))
-        } else if begin < 0
-            && end <= 0
-            && end.abs() as usize <= self.positionindex.charsize
-            && begin.abs() as usize <= self.positionindex.charsize
-            && begin.abs() > end.abs()
-        {
-            let begin_abs = self.positionindex.charsize - begin.abs() as usize;
-            let end_abs = self.positionindex.charsize - end.abs() as usize;
-            if begin_abs > end_abs {
-                return Err(Error::OutOfBoundsError { begin, end });
-            }
-            Ok((begin_abs, end_abs))
-        } else {
-            //shouldn't occur
-            unreachable!(
-                "Out of Bounds with {}-{}, should never happen (logic error)",
-                begin, end
-            )
+    pub fn absolute_pos(&self, mut begin: isize, mut end: isize) -> Result<(usize, usize), Error> {
+        if begin < 0 {
+            begin += self.positionindex.charsize as isize;
         }
+
+        if end <= 0 {
+            end += self.positionindex.charsize as isize;
+        }
+
+        if begin < 0 || end < 0 || begin > end {
+            return Err(Error::OutOfBoundsError { begin, end });
+        }
+
+        Ok((begin as usize, end as usize))
     }
 
     /// Returns the length of the total text file in characters, i.e. the number of character in the text
