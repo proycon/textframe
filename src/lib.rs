@@ -623,7 +623,10 @@ impl TextFile {
             .binary_search_by_bytepos(bytepos)
         {
             Ok(index) => Ok(self.positionindex.positions.charpos(index).unwrap()),
-            Err(0) => unreachable!("match before first positiondata should not occur"),
+            Err(0) => {
+                //insertion before first item should never happen **except if a file is empty**, because the first PositionData item is always the first byte
+                Err(Error::EmptyText)
+            }
             Err(index) => {
                 let prev_byte = self.positionindex.positions.bytepos(index - 1).unwrap();
                 let prev_char = self.positionindex.positions.charpos(index - 1).unwrap();
@@ -915,6 +918,11 @@ No one shall be held in slavery or servitude; slavery and the slave trade shall 
     fn setup_3() -> NamedTempFile {
         let mut file = tempfile::NamedTempFile::new().expect("temp file");
         write!(file, "{}", EXAMPLE_3_TEXT).expect("write must work");
+        file
+    }
+
+    fn setup_empty() -> NamedTempFile {
+        let file = tempfile::NamedTempFile::new().expect("temp file");
         file
     }
 
@@ -1220,5 +1228,14 @@ No one shall be held in slavery or servitude; slavery and the slave trade shall 
             TextFile::new(file.path(), None, Default::default()).expect("file must load");
         assert!(textfile.absolute_line_pos(0, 9999).is_err());
         assert!(textfile.absolute_line_pos(-9999, 0).is_err());
+    }
+
+    #[test]
+    pub fn test012_empty_file() {
+        let file = setup_empty();
+        let textfile =
+            TextFile::new(file.path(), None, Default::default()).expect("file must load");
+        assert!(matches!(textfile.bytes_to_chars(0), Err(Error::EmptyText)));
+        assert!(matches!(textfile.chars_to_bytes(0), Err(Error::EmptyText)));
     }
 }
