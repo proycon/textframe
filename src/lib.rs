@@ -25,6 +25,7 @@ type FrameHandle = u32;
 #[derive(Debug)]
 pub enum Error {
     OutOfBoundsError { begin: isize, end: isize },
+    InvalidUtf8Byte(usize),
     EmptyText,
     IOError(std::io::Error),
     Utf8Error(FromUtf8Error),
@@ -39,6 +40,11 @@ impl fmt::Display for Error {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         match self {
             Self::OutOfBoundsError { begin, end } => write!(f, "Out of Bounds ({},{})", begin, end),
+            Self::InvalidUtf8Byte(byte) => write!(
+                f,
+                "Byte does not correspond with utf-8 character boundary ({})",
+                byte
+            ),
             Self::EmptyText => write!(f, "text is empty"),
             Self::IOError(e) => write!(f, "{}", e),
             Self::Utf8Error(e) => write!(f, "{}", e),
@@ -394,10 +400,27 @@ impl TextFile {
         let (beginchar, endchar) = self.absolute_pos(begin, end)?;
         let beginbyte = self.chars_to_bytes(beginchar)?;
         let endbyte = self.chars_to_bytes(endchar)?;
-        self.get_byterange(beginbyte, endbyte)
+        self.get_byterange_unchecked(beginbyte, endbyte)
     }
 
+    /// Returns the text for a byte range, checks if the byte range is at valid UTF-8 character boundaries and returns an InvalidUtf8Bytes error if not
     pub fn get_byterange(&self, beginbyte: usize, endbyte: usize) -> Result<&str, Error> {
+        self.frame(beginbyte, endbyte)
+            .ok_or(Error::NotLoaded)
+            .map(|frame| {
+                //verify beginbyte and endbyte are at a char boundary, return error if not
+                self.bytes_to_chars(beginbyte - frame.beginbyte)?;
+                self.bytes_to_chars(endbyte - frame.beginbyte)?;
+                Ok(
+                    &frame.text.as_str()
+                        [(beginbyte - frame.beginbyte)..(endbyte - frame.beginbyte)],
+                )
+            })?
+    }
+
+    /// Returns the text for a byte range, but may panic if the byte range is not at valid UTF-8 character offsets
+    /// This is more performant than get_byterange() but can only be used if you're sure the bytes are valid
+    pub fn get_byterange_unchecked(&self, beginbyte: usize, endbyte: usize) -> Result<&str, Error> {
         self.frame(beginbyte, endbyte)
             .ok_or(Error::NotLoaded)
             .map(|frame| {
@@ -415,7 +438,7 @@ impl TextFile {
     /// Trailing newline characters will always be returned.
     pub fn get_lines(&self, begin: isize, end: isize) -> Result<&str, Error> {
         let (beginbyte, endbyte) = self.line_range_to_byte_range(begin, end)?;
-        self.get_byterange(beginbyte, endbyte)
+        self.get_byterange_unchecked(beginbyte, endbyte)
     }
 
     /// Returns a text fragment, the fragment will be loaded from disk into memory if needed.
@@ -609,6 +632,7 @@ impl TextFile {
         }
     }
 
+    /// Convert a UTF-8 byte position to a character position. Returns `Error::InvalidUtf8Byte` if the byte is not at a character boundary
     pub fn bytes_to_chars(&self, bytepos: usize) -> Result<usize, Error> {
         if bytepos > self.positionindex.bytesize {
             return Err(Error::OutOfBoundsError {
@@ -631,7 +655,11 @@ impl TextFile {
                 let prev_byte = self.positionindex.positions.bytepos(index - 1).unwrap();
                 let prev_char = self.positionindex.positions.charpos(index - 1).unwrap();
                 let size = self.positionindex.positions.size(index - 1).unwrap() as usize;
-                Ok(prev_char + (bytepos - prev_byte) / size)
+                if (bytepos - prev_byte) % size == 0 {
+                    Ok(prev_char + (bytepos - prev_byte) / size)
+                } else {
+                    Err(Error::InvalidUtf8Byte(bytepos))
+                }
             }
         }
     }
@@ -1170,6 +1198,28 @@ No one shall be held in slavery or servitude; slavery and the slave trade shall 
         let textfile =
             TextFile::new(file.path(), None, Default::default()).expect("file must load");
         assert!(textfile.bytes_to_chars(9999).is_err());
+    }
+
+    #[test]
+    pub fn test010_get_byterange() {
+        let file = setup_unicode();
+        let mut textfile =
+            TextFile::new(file.path(), None, Default::default()).expect("file must load");
+        textfile.load(0, 0).unwrap();
+        let text = textfile.get_byterange(1, 4).expect("text should exist");
+        assert_eq!(text, "第");
+    }
+
+    #[test]
+    pub fn test010_get_invalid_byterange() {
+        let file = setup_unicode();
+        let mut textfile =
+            TextFile::new(file.path(), None, Default::default()).expect("file must load");
+        textfile.load(0, 0).unwrap();
+        assert!(matches!(
+            textfile.get_byterange(1, 3), //this would slice inside 第 and is invalid
+            Err(Error::InvalidUtf8Byte(..))
+        ));
     }
 
     #[test]
