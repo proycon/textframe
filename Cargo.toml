@@ -1,6 +1,6 @@
 [package]
 name = "textframe"
-version = "0.3.1"
+version = "0.4.0"
 edition = "2021"
 authors = ["Maarten van Gompel <proycon@anaproy.nl>"]
 description = "Library to query plain text documents by unicode offset without loading them all into memory"
@@ -12,9 +12,9 @@ repository = "https://github.com/proycon/textframe"
 keywords = [ "text-processing", "text", "linguistics", "standoff"]
 
 [dependencies]
-hmac-sha256 = "1.1.8"
+hmac-sha256 = "1.1.12"
 minicbor = { version = "0.26.5", features = ["derive","std" ] }
 smallvec = "1.15.1"
 
 [dev-dependencies]
-tempfile = "3.20.0"
+tempfile = "3.23.0"
