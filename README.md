@@ -55,7 +55,7 @@ let text: &str = textfile.get_or_load_lines(-1,0);
 
 ## Related projects
 
-* [textsurf](https://github.com/knaw-huc/textsurf) - A WebAPI around textframe. Serves text files over the web.
+* [textsurf](https://codeberg.org/proycon/textsurf) - A WebAPI around textframe. Serves text files over the web.
 
 ## Licence
 
