@@ -5,6 +5,7 @@ TextFrame
   licensed under the GNU General Public Licence v3
 */
 
+use filetime::FileTime;
 use hmac_sha256::Hash;
 use minicbor::{Decode, Encode};
 use smallvec::{smallvec, SmallVec};
@@ -367,8 +368,13 @@ impl TextFile {
         let mut positionindex = PositionIndex::default();
         if let Some(indexpath) = indexpath.as_ref() {
             if indexpath.exists() {
-                positionindex = PositionIndex::from_file(indexpath)?;
-                build_index = false;
+                let indexmetadata = std::fs::metadata(indexpath).map_err(|e| Error::IOError(e))?;
+                if FileTime::from_last_modification_time(&indexmetadata)
+                    >= FileTime::from_last_modification_time(&metadata)
+                {
+                    positionindex = PositionIndex::from_file(indexpath)?;
+                    build_index = false;
+                }
             }
         }
         if build_index {
