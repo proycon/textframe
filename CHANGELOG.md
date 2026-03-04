@@ -1,3 +1,6 @@
+# v0.4.1 - 2026-03-04
+
+* rebuild index when the index file is older than the source text
 
 # v0.4.0 - 2026-01-05
 
